@@ -40,7 +40,7 @@ win_w  = COLS * TILE_W + (COLS + 1) * PAD
 win_h  = 74 + rows * (TILE_H + PAD) + PAD + 36
 
 fenetre = tk.Tk()
-fenetre.title("Mon Hub")
+fenetre.title("MyHub53")
 fenetre.geometry(f"{win_w}x{win_h}")
 fenetre.resizable(False, False)
 fenetre.configure(bg=BG)
@@ -54,7 +54,7 @@ except Exception:
 header = tk.Frame(fenetre, bg=BG2, pady=12)
 header.pack(fill="x")
 
-tk.Label(header, text="💝  Mon Hub", bg=BG2, fg=FG,
+tk.Label(header, text="💝  MyHub53", bg=BG2, fg=FG,
          font=("Segoe UI", 15, "bold")).pack(side="left", padx=18)
 
 lbl_version = tk.Label(header, text=f"v{LOCAL_VERSION}", bg=BG2, fg=FG2,

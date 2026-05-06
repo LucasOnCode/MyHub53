@@ -1,4 +1,4 @@
-# CLAUDE.md — Guide du projet MonHub
+# CLAUDE.md — Guide du projet MyHub53
 
 Ce fichier est automatiquement chargé par Claude Code à chaque session.
 Il contient tout le contexte nécessaire pour travailler sur ce projet.
@@ -7,7 +7,7 @@ Il contient tout le contexte nécessaire pour travailler sur ce projet.
 
 ## Vue d'ensemble
 
-**MonHub** est une application desktop Windows (Python + tkinter) offerte comme cadeau.
+**MyHub53** est une application desktop Windows (Python + tkinter) offerte comme cadeau.
 C'est un hub qui regroupe plusieurs petits outils utilitaires sous une interface unifiée.
 Chaque outil s'ouvre dans sa propre fenêtre `Toplevel` depuis la page principale (hub).
 
@@ -22,17 +22,17 @@ Chaque outil s'ouvre dans sa propre fenêtre `Toplevel` depuis la page principal
 ## Structure du projet
 
 ```
-MonHub/
+MyHub53/
 ├── main.py                    # Hub principal — page d'accueil avec les tiles
 ├── version.txt                # Version actuelle ex: "1.0.0" — comparée avec GitHub
 ├── CLAUDE.md                  # Ce fichier
-├── MonHub.spec                # Config PyInstaller pour le build
+├── MyHub53.spec                # Config PyInstaller pour le build
 ├── icone.ico                  # Icône de l'application
 │
 ├── core/
 │   ├── __init__.py
 │   ├── base_tool.py           # Classe BaseTool — parente de tous les outils
-│   ├── settings.py            # Lecture/écriture settings dans %APPDATA%\MonHub\
+│   ├── settings.py            # Lecture/écriture settings dans %APPDATA%\MyHub53\
 │   └── updater.py             # Vérification + téléchargement mises à jour GitHub
 │
 ├── tools/
@@ -125,7 +125,7 @@ class BaseTool:
 
 ## Paramètres persistants
 
-Chaque outil a son propre namespace dans `%APPDATA%\MonHub\settings.json` :
+Chaque outil a son propre namespace dans `%APPDATA%\MyHub53\settings.json` :
 
 ```python
 import core.settings as settings_store
@@ -140,7 +140,7 @@ valeur = cfg.get("ma_cle", "valeur_defaut")
 settings_store.save(TOOL_ID, {"ma_cle": "nouvelle_valeur"})
 
 # Fichier d'historique dédié à l'outil
-hf = settings_store.history_file(TOOL_ID)  # Path vers %APPDATA%\MonHub\mon_outil_history.json
+hf = settings_store.history_file(TOOL_ID)  # Path vers %APPDATA%\MyHub53\mon_outil_history.json
 ```
 
 ---
@@ -156,8 +156,8 @@ GITHUB_REPO = "ton_username/ton_repo"   # repo GitHub du projet
 ### Workflow de release
 1. Modifier le code
 2. Changer `version.txt` → ex: `1.1.0`
-3. Builder : `pyinstaller MonHub.spec`
-4. Sur GitHub : créer une Release avec le tag `v1.1.0`, uploader `dist/MonHub.exe`
+3. Builder : `pyinstaller MyHub53.spec`
+4. Sur GitHub : créer une Release avec le tag `v1.1.0`, uploader `dist/MyHub53.exe`
 
 ### Ce qui se passe côté utilisatrice
 - Au démarrage, l'app vérifie silencieusement GitHub (timeout 5s, ne bloque pas l'UI)
@@ -177,9 +177,9 @@ La mise à jour automatique est désactivée (fonctionne uniquement avec le `.ex
 .\venv\Scripts\activate
 
 # Builder
-pyinstaller MonHub.spec
+pyinstaller MyHub53.spec
 
-# L'exe est dans dist\MonHub.exe
+# L'exe est dans dist\MyHub53.exe
 ```
 
 Le `.spec` inclut automatiquement : `icone.ico`, `ffmpeg_bin/`, `version.txt`.

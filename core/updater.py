@@ -24,7 +24,7 @@ def check_update(repo: str) -> tuple:
     """Returns (remote_version, download_url) or (None, None) on failure."""
     try:
         url = f"https://api.github.com/repos/{repo}/releases/latest"
-        req = urllib.request.Request(url, headers={"User-Agent": "MonHub-Updater"})
+        req = urllib.request.Request(url, headers={"User-Agent": "MyHub53-Updater"})
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read())
         version = data["tag_name"].lstrip("v")

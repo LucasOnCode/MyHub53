@@ -30,7 +30,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='MonHub',
+    name='MyHub53',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

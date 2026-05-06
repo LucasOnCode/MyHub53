@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-APP_DIR = Path(os.environ.get("APPDATA", ".")) / "MonHub"
+APP_DIR = Path(os.environ.get("APPDATA", ".")) / "MyHub53"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 
 _SETTINGS_FILE = APP_DIR / "settings.json"
