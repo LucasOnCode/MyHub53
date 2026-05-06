@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem D:\\\\LOGICIELS\\\\MyFileConverter -Name | Where-Object { $_ -notmatch \"^venv\" -and $_ -notmatch \"^build\" -and $_ -notmatch \"^dist\" })",
+      "PowerShell(New-Item *)"
+    ]
+  }
+}
