@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "PowerShell(Get-ChildItem D:\\\\LOGICIELS\\\\MyFileConverter -Name | Where-Object { $_ -notmatch \"^venv\" -and $_ -notmatch \"^build\" -and $_ -notmatch \"^dist\" })",
-      "PowerShell(New-Item *)"
+      "PowerShell(New-Item *)",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -c \"import PySide6; print\\(PySide6.__version__\\)\")",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\pip.exe install PySide6 2>&1 | Select-Object -Last 5)",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe --version; D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -c \"import platform; print\\(platform.architecture\\(\\)\\)\")",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -m pip install --upgrade pip 2>&1 | Select-Object -Last 3)",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -m pip install --upgrade pip 2>&1)",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org PySide6 2>&1 | Select-Object -Last 10)",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0, 'D:/LOGICIELS/MyFileConverter'\\); from PySide6.QtWidgets import QApplication; app = QApplication\\([]\\); from core import theme; loaded = theme.load_fonts\\(\\); print\\('LOADED:', sorted\\(loaded\\)\\); print\\('QSS_APP_LEN:', len\\(theme.qss_app\\(\\)\\)\\); print\\('rgba check:', theme.rgba\\('#5fc8d8', 0.3\\)\\)\")",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -m PyInstaller --version 2>&1)",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -m PyInstaller MyHub53.spec --noconfirm --clean 2>&1 | Select-Object -Last 30)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(D:\\\\LOGICIELS\\\\MyFileConverter\\\\venv\\\\Scripts\\\\python.exe -m PyInstaller MyHub53.spec --noconfirm --clean 2>&1 | Select-Object -Last 3)"
     ]
   }
 }

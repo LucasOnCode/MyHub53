@@ -1,6 +1,7 @@
 venv/
 build/
 dist/
+design/
 __pycache__/
 **/__pycache__/
 *.pyc

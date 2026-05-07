@@ -1,3 +1,12 @@
+"""MyFileConverter — YouTube → MP3/FLAC/M4A/WAV/OGG.
+
+Aquatic-univers PySide6 UI. The yt-dlp logic is identical to the original
+tkinter version; only the presentation layer changed. Worker threads emit
+Qt signals to push updates to the UI thread safely.
+"""
+
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -7,12 +16,35 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-import tkinter as tk
+from typing import Optional
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 import yt_dlp
 
 import core.settings as settings_store
+from core import theme
 from core.base_tool import BaseTool
 
 TOOL_ID = "converter"
@@ -20,6 +52,10 @@ TOOL_ID = "converter"
 FORMAT_CODEC       = {"MP3": "mp3", "FLAC": "flac", "M4A": "m4a", "WAV": "wav", "OGG": "vorbis"}
 SUPPORTS_THUMBNAIL = {"MP3", "M4A"}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pure helpers (unchanged from the tkinter version)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _resource_path(rel: str) -> str:
     if hasattr(sys, "_MEIPASS"):
@@ -60,8 +96,8 @@ def _format_speed(bps) -> str:
     if not bps:
         return ""
     if bps >= 1_000_000:
-        return f"{bps/1_000_000:.1f} MB/s"
-    return f"{bps/1_000:.0f} KB/s"
+        return f"{bps / 1_000_000:.1f} MB/s"
+    return f"{bps / 1_000:.0f} KB/s"
 
 
 def _load_history() -> list:
@@ -75,7 +111,7 @@ def _load_history() -> list:
     return []
 
 
-def _append_history(title: str, url: str, folder: str, fmt: str):
+def _append_history(title: str, url: str, folder: str, fmt: str) -> None:
     hf = settings_store.history_file(TOOL_ID)
     h = _load_history()
     h.insert(0, {"title": title, "url": url, "folder": folder,
@@ -84,180 +120,413 @@ def _append_history(title: str, url: str, folder: str, fmt: str):
         json.dump(h[:200], f, ensure_ascii=False, indent=2)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Track row widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _TrackRow(QFrame):
+    """A single track in the converter's track list."""
+
+    def __init__(self, idx: int, title: str, duration_sec, is_dup: bool,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.idx = idx
+        self.is_dup = is_dup
+        self.setObjectName("TrackRow")
+        self.setStyleSheet(f"""
+            #TrackRow {{
+                background-color: {theme.rgba(theme.INK_DEEP, 0.45)};
+                border: 1px solid {theme.rgba(theme.TURQUOISE, 0.10)};
+                border-radius: 10px;
+            }}
+            #TrackRow:hover {{
+                border-color: {theme.rgba(theme.TURQUOISE, 0.30)};
+            }}
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(10)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(not is_dup)
+        self.checkbox.setStyleSheet(f"""
+            QCheckBox {{ color: transparent; }}
+            QCheckBox::indicator {{
+                width: 18px; height: 18px;
+                background: {theme.rgba(theme.INK_DEEPEST, 0.6)};
+                border: 1px solid {theme.rgba(theme.TURQUOISE, 0.5)};
+                border-radius: 4px;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {theme.TURQUOISE};
+                border-color: {theme.TURQUOISE};
+            }}
+        """)
+        layout.addWidget(self.checkbox)
+
+        idx_lbl = QLabel(f"{idx + 1:02d}")
+        idx_lbl.setFont(theme.font("mono", 11, QFont.Weight.Medium))
+        idx_lbl.setStyleSheet(f"color: {theme.FG_DIM}; background: transparent;")
+        idx_lbl.setFixedWidth(26)
+        layout.addWidget(idx_lbl)
+
+        title_text = title if len(title) <= 60 else title[:60] + "…"
+        if is_dup:
+            title_text += "   · déjà téléchargé"
+        title_lbl = QLabel(title_text)
+        title_lbl.setFont(theme.font("body", 13))
+        title_lbl.setStyleSheet(
+            f"color: {theme.FG_DIM if is_dup else theme.FG};"
+            f"background: transparent;"
+        )
+        title_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout.addWidget(title_lbl, stretch=1)
+
+        self.speed_lbl = QLabel("")
+        self.speed_lbl.setFont(theme.font("mono", 10, QFont.Weight.Medium))
+        self.speed_lbl.setStyleSheet(f"color: {theme.GOLD}; background: transparent;")
+        self.speed_lbl.setFixedWidth(72)
+        self.speed_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.speed_lbl)
+
+        dur_lbl = QLabel(_format_duration(duration_sec))
+        dur_lbl.setFont(theme.font("mono", 11))
+        dur_lbl.setStyleSheet(f"color: {theme.FG_DIM}; background: transparent;")
+        dur_lbl.setFixedWidth(46)
+        dur_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(dur_lbl)
+
+        self.progress = QProgressBar()
+        self.progress.setFixedWidth(80)
+        self.progress.setFixedHeight(6)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setStyleSheet(f"""
+            QProgressBar {{
+                background: {theme.rgba(theme.INK_DEEPEST, 0.6)};
+                border: none;
+                border-radius: 3px;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {theme.TURQUOISE}, stop:1 {theme.IRIS});
+                border-radius: 3px;
+            }}
+        """)
+        layout.addWidget(self.progress)
+
+    def is_checked(self) -> bool:
+        return self.checkbox.isChecked()
+
+    def set_checked(self, v: bool) -> None:
+        self.checkbox.setChecked(v)
+
+    def set_progress(self, pct: int) -> None:
+        self.progress.setValue(max(0, min(100, int(pct))))
+
+    def set_speed(self, text: str) -> None:
+        self.speed_lbl.setText(text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pill button group helper (format / quality / workers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _PillGroup(QWidget):
+    """A horizontal row of mutually exclusive pill buttons."""
+
+    changed = Signal(str)
+
+    def __init__(self, label: str, values: list[str], default: str,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+
+        lbl = QLabel(label.upper())
+        lbl.setFont(theme.font("body", 10, QFont.Weight.DemiBold, letter_spacing=4))
+        lbl.setStyleSheet(f"color: {theme.FG_DIM}; background: transparent;")
+        outer.addWidget(lbl)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons: dict[str, QPushButton] = {}
+        for v in values:
+            btn = QPushButton(v)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            active = (v == default)
+            btn.setChecked(active)
+            btn.setStyleSheet(theme.qss_pill(active=active))
+            self._group.addButton(btn)
+            self._buttons[v] = btn
+            row.addWidget(btn)
+        row.addStretch(1)
+        outer.addLayout(row)
+
+        self._group.buttonClicked.connect(self._on_clicked)
+
+    def _on_clicked(self, _btn) -> None:
+        for v, b in self._buttons.items():
+            b.setStyleSheet(theme.qss_pill(active=b.isChecked()))
+        self.changed.emit(self.value())
+
+    def value(self) -> str:
+        for v, b in self._buttons.items():
+            if b.isChecked():
+                return v
+        return ""
+
+    def set_enabled(self, enabled: bool) -> None:
+        for b in self._buttons.values():
+            b.setEnabled(enabled)
+        self.setEnabled(enabled)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Converter tool
+# ─────────────────────────────────────────────────────────────────────────────
+
 class ConverterTool(BaseTool):
-    def __init__(self, parent):
-        self._cfg           = settings_store.load(TOOL_ID)
-        self._tracks        = []
-        self._check_vars    = []
-        self._prog_bars     = []
-        self._speed_labels  = []
-        self._annuler_flag  = threading.Event()
-        self._last_cb       = ""
-        super().__init__(parent, "MyFileConverter", accent="#e84393",
-                         width=700, height=700)
+    # Worker → UI signals
+    preview_ready    = Signal(list)             # list of track dicts
+    preview_failed   = Signal(str)
+    row_progress     = Signal(int, int)         # (idx, pct)
+    row_speed        = Signal(int, str)         # (idx, speed text)
+    counter_changed  = Signal(int, int)         # (done, total)
+    download_done    = Signal(int, list)        # (done, errors)
+    download_cancelled = Signal()
 
-    # ── build ────────────────────────────────────────────────────────────────────
-    def build(self):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        self._cfg = settings_store.load(TOOL_ID)
+        self._tracks: list[dict] = []
+        self._track_rows: list[_TrackRow] = []
+        self._cancel_flag = threading.Event()
+        self._last_clipboard = ""
+        super().__init__(
+            parent,
+            name="MyFileConverter",
+            accent=theme.TURQUOISE,
+            univers="aquatic",
+            width=820, height=740,
+            min_w=700, min_h=580,
+        )
+
+    # ── Build UI ─────────────────────────────────────────────────────────────
+    def build(self) -> None:
         self._build_url_section()
-        self._build_options_row()
-        tk.Frame(self.win, bg=self.BG3, height=1).pack(fill="x", padx=24)
-        self._build_track_list()
-        tk.Frame(self.win, bg=self.BG3, height=1).pack(fill="x", padx=24, pady=8)
+        self._build_options_section()
+        self._build_tracks_section()
         self._build_destination_section()
-        self._build_action_buttons()
-        self._make_status_bar("Colle une URL et clique sur Analyser")
-        self.win.bind("<FocusIn>", self._check_clipboard)
+        self._build_actions_section()
+        self._make_status_bar("Colle une URL et clique sur Analyser.")
+        self._wire_signals()
 
-    def _build_url_section(self):
-        sec = tk.Frame(self.win, bg=self.BG)
-        sec.pack(fill="x", padx=24, pady=(12, 10))
-        tk.Label(sec, text="URL", bg=self.BG, fg=self.FG2,
-                 font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 4))
-        row = tk.Frame(sec, bg=self.BG2)
-        row.pack(fill="x")
-        self._entry_url = tk.Entry(row, bg=self.BG2, fg=self.FG,
-                                   insertbackground=self.FG,
-                                   relief="flat", font=("Segoe UI", 10), bd=0)
-        self._entry_url.pack(side="left", fill="x", expand=True, ipady=8, padx=(12, 0))
-        self._btn_preview = tk.Button(
-            row, text="Analyser →", command=self._fetch_preview,
-            bg=self.accent, fg=self.FG, relief="flat",
-            padx=16, pady=8, cursor="hand2", font=("Segoe UI", 9, "bold"), bd=0,
-            activebackground=self.BG3, activeforeground=self.FG)
-        self._btn_preview.pack(side="left", padx=(8, 0))
+    def _section_label(self, text: str) -> QLabel:
+        lbl = QLabel(text.upper())
+        lbl.setFont(theme.font("body", 10, QFont.Weight.DemiBold, letter_spacing=4))
+        lbl.setStyleSheet(f"color: {theme.TURQUOISE}; background: transparent;")
+        return lbl
 
-    def _build_options_row(self):
-        tk.Frame(self.win, bg=self.BG3, height=1).pack(fill="x", padx=24, pady=(6, 0))
-        row = tk.Frame(self.win, bg=self.BG)
-        row.pack(fill="x", padx=24, pady=10)
+    def _build_url_section(self) -> None:
+        self.body_layout.addWidget(self._section_label("URL"))
 
-        def combo(parent, label, values, default, width=8):
-            f = tk.Frame(parent, bg=self.BG)
-            f.pack(side="left", padx=(0, 24))
-            tk.Label(f, text=label, bg=self.BG, fg=self.FG2,
-                     font=("Segoe UI", 8, "bold")).pack(anchor="w")
-            c = ttk.Combobox(f, values=values, state="readonly",
-                             width=width, font=("Segoe UI", 9))
-            c.set(default)
-            c.pack()
-            return c
+        row = QHBoxLayout()
+        row.setSpacing(10)
 
-        self._combo_fmt  = combo(row, "FORMAT",
-                                  ["MP3", "FLAC", "M4A", "WAV", "OGG"],
-                                  self._cfg.get("format", "MP3"))
-        self._combo_qual = combo(row, "QUALITÉ (MP3)", ["128", "192", "320"],
-                                  self._cfg.get("quality", "192"))
-        self._combo_workers = combo(row, "EN PARALLÈLE", ["1", "2", "3", "4", "5"],
-                                    str(self._cfg.get("workers", 2)), width=4)
-        self._combo_fmt.bind("<<ComboboxSelected>>", self._on_format_change)
-        self._on_format_change()
+        self._url_input = QLineEdit()
+        self._url_input.setPlaceholderText("Colle ici une URL YouTube…")
+        self._url_input.setStyleSheet(theme.qss_input())
+        self._url_input.returnPressed.connect(self._fetch_preview)
+        row.addWidget(self._url_input, stretch=1)
 
-        tk.Button(row, text="Historique", command=self._show_history,
-                  bg=self.BG3, fg=self.FG2, relief="flat", padx=10, pady=4,
-                  font=("Segoe UI", 8), cursor="hand2", bd=0).pack(side="right")
+        self._analyze_btn = QPushButton("Analyser  ↗")
+        self._analyze_btn.setStyleSheet(theme.qss_button_primary())
+        self._analyze_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._analyze_btn.clicked.connect(self._fetch_preview)
+        row.addWidget(self._analyze_btn)
 
-    def _on_format_change(self, *_):
-        state = "readonly" if self._combo_fmt.get() == "MP3" else "disabled"
-        self._combo_qual.config(state=state)
+        self.body_layout.addLayout(row)
 
-    def _build_track_list(self):
-        hdr = tk.Frame(self.win, bg=self.BG)
-        hdr.pack(fill="x", padx=24, pady=(8, 4))
-        tk.Label(hdr, text="MORCEAUX", bg=self.BG, fg=self.FG2,
-                 font=("Segoe UI", 8, "bold")).pack(side="left")
-        self._label_count = tk.Label(hdr, text="", bg=self.BG, fg=self.accent,
-                                      font=("Segoe UI", 8, "bold"))
-        self._label_count.pack(side="left", padx=8)
+    def _build_options_section(self) -> None:
+        row = QHBoxLayout()
+        row.setSpacing(28)
 
-        fc = tk.Frame(self.win, bg=self.BG)
-        fc.pack(fill="both", expand=True, padx=24)
-        self._canvas = tk.Canvas(fc, bg=self.BG, highlightthickness=0)
-        sb = ttk.Scrollbar(fc, orient="vertical", command=self._canvas.yview,
-                            style="Tool.Vertical.TScrollbar")
-        self._frame_tracks = tk.Frame(self._canvas, bg=self.BG)
-        self._frame_tracks.bind("<Configure>",
-            lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
-        self._canvas.create_window((0, 0), window=self._frame_tracks, anchor="nw", width=640)
-        self._canvas.configure(yscrollcommand=sb.set)
-        self._canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        self._fmt_pill = _PillGroup("Format",
+                                     ["MP3", "FLAC", "M4A", "WAV", "OGG"],
+                                     self._cfg.get("format", "MP3"))
+        self._fmt_pill.changed.connect(self._on_format_change)
+        row.addWidget(self._fmt_pill)
 
-        self._canvas.bind("<Enter>",
-            lambda e: self._canvas.bind_all("<MouseWheel>", self._on_scroll))
-        self._canvas.bind("<Leave>",
-            lambda e: self._canvas.unbind_all("<MouseWheel>"))
+        self._qual_pill = _PillGroup("Qualité (MP3)",
+                                      ["128", "192", "320"],
+                                      self._cfg.get("quality", "192"))
+        row.addWidget(self._qual_pill)
 
-        self._frame_check_btns = tk.Frame(self.win, bg=self.BG)
-        self._btn_toggle = tk.Button(
-            self._frame_check_btns, text="Tout désélectionner",
-            command=self._toggle_all, bg=self.BG3, fg=self.FG2,
-            relief="flat", padx=10, pady=4, font=("Segoe UI", 8), cursor="hand2", bd=0)
-        self._btn_toggle.pack(side="left")
+        self._workers_pill = _PillGroup("En parallèle",
+                                         ["1", "2", "3", "4", "5"],
+                                         str(self._cfg.get("workers", 2)))
+        row.addWidget(self._workers_pill)
 
-    def _on_scroll(self, e):
-        self._canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        row.addStretch(1)
 
-    def _build_destination_section(self):
-        sec = tk.Frame(self.win, bg=self.BG)
-        sec.pack(fill="x", padx=24, pady=(0, 8))
-        tk.Label(sec, text="DOSSIER DE DESTINATION", bg=self.BG, fg=self.FG2,
-                 font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 4))
-        row = tk.Frame(sec, bg=self.BG2)
-        row.pack(fill="x")
-        self._entry_dossier = tk.Entry(row, bg=self.BG2, fg=self.FG,
-                                        insertbackground=self.FG,
-                                        relief="flat", font=("Segoe UI", 10), bd=0)
-        self._entry_dossier.pack(side="left", fill="x", expand=True, ipady=8, padx=(12, 0))
-        self._entry_dossier.insert(0, self._cfg.get("dernier_dossier", ""))
-        tk.Button(row, text="Parcourir", command=self._choisir_dossier,
-                  bg=self.BG3, fg=self.FG2, relief="flat", padx=12, pady=8,
-                  font=("Segoe UI", 8), cursor="hand2", bd=0).pack(side="left", padx=4)
+        history_btn = QPushButton("Historique")
+        history_btn.setStyleSheet(theme.qss_button_ghost())
+        history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        history_btn.clicked.connect(self._show_history)
+        row.addWidget(history_btn, alignment=Qt.AlignmentFlag.AlignBottom)
 
-    def _build_action_buttons(self):
-        row = tk.Frame(self.win, bg=self.BG)
-        row.pack(fill="x", padx=24, pady=(0, 10))
-        self._btn_dl = tk.Button(
-            row, text="⬇  Télécharger", command=self._telecharger,
-            bg=self.accent, fg=self.FG, relief="flat", padx=20, pady=10,
-            cursor="hand2", font=("Segoe UI", 10, "bold"), state="disabled", bd=0)
-        self._btn_dl.pack(side="left", padx=(0, 8))
-        self._btn_cancel = tk.Button(
-            row, text="✕  Annuler", command=self._annuler,
-            bg=self.BG3, fg=self.FG2, relief="flat", padx=16, pady=10,
-            cursor="hand2", font=("Segoe UI", 10), state="disabled", bd=0)
-        self._btn_cancel.pack(side="left")
-        self._label_compteur = tk.Label(row, text="", bg=self.BG, fg=self.VERT,
-                                         font=("Segoe UI", 10, "bold"))
-        self._label_compteur.pack(side="right")
+        self.body_layout.addLayout(row)
+        self._on_format_change(self._fmt_pill.value())
 
-    # ── Clipboard ────────────────────────────────────────────────────────────────
-    def _check_clipboard(self, *_):
+    def _on_format_change(self, fmt: str) -> None:
+        self._qual_pill.set_enabled(fmt == "MP3")
+
+    def _build_tracks_section(self) -> None:
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(self._section_label("Morceaux"))
+        self._count_lbl = QLabel("")
+        self._count_lbl.setFont(theme.font("mono", 11, QFont.Weight.DemiBold))
+        self._count_lbl.setStyleSheet(f"color: {theme.TURQUOISE}; background: transparent;")
+        head.addWidget(self._count_lbl)
+        head.addStretch(1)
+        self._toggle_btn = QPushButton("Tout désélectionner")
+        self._toggle_btn.setStyleSheet(theme.qss_button_ghost())
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.hide()
+        self._toggle_btn.clicked.connect(self._toggle_all)
+        head.addWidget(self._toggle_btn)
+        self.body_layout.addLayout(head)
+
+        # Scrollable container for the rows
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+        scroll.viewport().setAutoFillBackground(False)
+        scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        container = QWidget()
+        container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._tracks_layout = QVBoxLayout(container)
+        self._tracks_layout.setContentsMargins(0, 4, 0, 4)
+        self._tracks_layout.setSpacing(4)
+        self._tracks_layout.addStretch(1)
+
+        self._empty_lbl = QLabel("Colle une URL et clique sur Analyser pour découvrir les morceaux.")
+        self._empty_lbl.setFont(theme.font("body", 13, italic=True))
+        self._empty_lbl.setStyleSheet(
+            f"color: {theme.FG_DIM}; background: transparent; padding: 30px;"
+        )
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_lbl.setWordWrap(True)
+        # Insert before the stretch
+        self._tracks_layout.insertWidget(0, self._empty_lbl)
+
+        scroll.setWidget(container)
+        self.body_layout.addWidget(scroll, stretch=1)
+
+    def _build_destination_section(self) -> None:
+        self.body_layout.addWidget(self._section_label("Dossier de destination"))
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        self._dest_input = QLineEdit()
+        self._dest_input.setPlaceholderText("Choisis un dossier…")
+        self._dest_input.setStyleSheet(theme.qss_input())
+        self._dest_input.setText(self._cfg.get("dernier_dossier", ""))
+        row.addWidget(self._dest_input, stretch=1)
+
+        browse = QPushButton("Parcourir")
+        browse.setStyleSheet(theme.qss_button_ghost())
+        browse.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse.clicked.connect(self._browse_destination)
+        row.addWidget(browse)
+
+        self.body_layout.addLayout(row)
+
+    def _build_actions_section(self) -> None:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        self._download_btn = QPushButton("⬇   Télécharger")
+        self._download_btn.setStyleSheet(theme.qss_button_primary())
+        self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._download_btn.setEnabled(False)
+        self._download_btn.clicked.connect(self._start_download)
+        row.addWidget(self._download_btn)
+
+        self._cancel_btn = QPushButton("✕   Annuler")
+        self._cancel_btn.setStyleSheet(theme.qss_button_ghost())
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.setEnabled(False)
+        self._cancel_btn.clicked.connect(self._cancel_download)
+        row.addWidget(self._cancel_btn)
+
+        row.addStretch(1)
+
+        self._counter_lbl = QLabel("")
+        self._counter_lbl.setFont(theme.font("mono", 13, QFont.Weight.DemiBold))
+        self._counter_lbl.setStyleSheet(f"color: {theme.SUCCESS}; background: transparent;")
+        row.addWidget(self._counter_lbl)
+
+        self.body_layout.addLayout(row)
+
+    # ── Signal wiring ────────────────────────────────────────────────────────
+    def _wire_signals(self) -> None:
+        self.preview_ready.connect(self._on_preview_ready)
+        self.preview_failed.connect(self._on_preview_failed)
+        self.row_progress.connect(self._on_row_progress)
+        self.row_speed.connect(self._on_row_speed)
+        self.counter_changed.connect(self._on_counter_changed)
+        self.download_done.connect(self._on_download_done)
+        self.download_cancelled.connect(self._on_download_cancelled)
+
+    # ── Clipboard auto-detect on focus ───────────────────────────────────────
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._check_clipboard()
+
+    def _check_clipboard(self) -> None:
         try:
-            if self._entry_url.get().strip():
+            from PySide6.QtGui import QGuiApplication
+            if self._url_input.text().strip():
                 return
-            cb = self.win.clipboard_get().strip()
-            if cb == self._last_cb or not cb.startswith("http"):
+            cb = (QGuiApplication.clipboard().text() or "").strip()
+            if cb == self._last_clipboard or not cb.startswith("http"):
                 return
-            self._last_cb = cb
-            self._entry_url.delete(0, tk.END)
-            self._entry_url.insert(0, cb)
-            self.set_status("URL détectée dans le presse-papiers", self.VERT)
+            self._last_clipboard = cb
+            self._url_input.setText(cb)
+            self.set_status("URL détectée dans le presse-papiers", theme.SUCCESS)
         except Exception:
             pass
 
-    # ── Preview ──────────────────────────────────────────────────────────────────
-    def _fetch_preview(self):
-        url = self._entry_url.get().strip()
+    # ── Preview / analyse ────────────────────────────────────────────────────
+    def _fetch_preview(self) -> None:
+        url = self._url_input.text().strip()
         if not _validate_url(url):
-            messagebox.showwarning("URL invalide", "Colle une URL valide avant d'analyser.",
-                                   parent=self.win)
+            QMessageBox.warning(self, "URL invalide",
+                                "Colle une URL valide avant d'analyser.")
             return
-        self._tracks, self._check_vars, self._prog_bars, self._speed_labels = [], [], [], []
-        for w in self._frame_tracks.winfo_children():
-            w.destroy()
-        self._btn_dl.config(state="disabled")
-        self._btn_preview.config(state="disabled")
-        self.set_status("Analyse en cours...", self.accent)
+
+        self._reset_tracks()
+        self._download_btn.setEnabled(False)
+        self._analyze_btn.setEnabled(False)
+        self.set_status("Analyse en cours…", theme.TURQUOISE)
 
         def run():
             try:
@@ -265,96 +534,100 @@ class ConverterTool(BaseTool):
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                 if "entries" in info:
-                    self._tracks = [
+                    tracks = [
                         {"title": e.get("title", "Titre inconnu"),
                          "duration": e.get("duration"),
                          "url": e.get("url") or e.get("webpage_url") or url}
                         for e in info["entries"] if e
                     ]
                 else:
-                    self._tracks = [{"title": info.get("title", "Titre inconnu"),
-                                     "duration": info.get("duration"), "url": url}]
-                self.win.after(0, self._afficher_tracks)
+                    tracks = [{"title": info.get("title", "Titre inconnu"),
+                               "duration": info.get("duration"),
+                               "url": url}]
+                self.preview_ready.emit(tracks)
             except Exception as e:
-                self.win.after(0, lambda: self.set_status(f"Erreur : {e}", self.ROUGE))
-                self.win.after(0, lambda: self._btn_preview.config(state="normal"))
+                self.preview_failed.emit(str(e))
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _afficher_tracks(self):
-        self._check_vars, self._prog_bars, self._speed_labels = [], [], []
-        for w in self._frame_tracks.winfo_children():
-            w.destroy()
+    def _reset_tracks(self) -> None:
+        for row in self._track_rows:
+            self._tracks_layout.removeWidget(row)
+            row.deleteLater()
+        self._track_rows.clear()
+        self._tracks = []
+        self._count_lbl.setText("")
+        self._toggle_btn.hide()
+        self._empty_lbl.show()
 
-        dossier = self._entry_dossier.get().strip()
-        existing = set()
-        if dossier:
-            p = Path(dossier)
+    def _on_preview_ready(self, tracks: list) -> None:
+        self._tracks = tracks
+        self._empty_lbl.hide()
+
+        dest = self._dest_input.text().strip()
+        existing: set[str] = set()
+        if dest:
+            p = Path(dest)
             if p.exists():
                 existing = {f.stem.lower() for f in p.iterdir() if f.is_file()}
 
         for i, track in enumerate(self._tracks):
-            var = tk.BooleanVar(value=True)
-            self._check_vars.append(var)
             is_dup = any(track["title"].lower()[:40] in s for s in existing)
-            row_bg = self.BG3 if i % 2 == 0 else self.BG2
-            row = tk.Frame(self._frame_tracks, bg=row_bg)
-            row.pack(fill="x", pady=1)
-
-            tk.Checkbutton(row, variable=var, bg=row_bg, activebackground=row_bg,
-                           selectcolor=self.BG, fg=self.FG, cursor="hand2"
-                           ).pack(side="left", padx=(8, 4), pady=6)
-            tk.Label(row, text=f"{i+1:02d}", bg=row_bg, fg=self.FG2,
-                     font=("Consolas", 9)).pack(side="left", padx=(0, 8))
-
-            titre = track["title"][:46] + "…" if len(track["title"]) > 46 else track["title"]
-            tag = "  [déjà dl]" if is_dup else ""
-            tk.Label(row, text=titre + tag, bg=row_bg,
-                     fg=self.FG2 if is_dup else self.FG,
-                     font=("Segoe UI", 9), anchor="w"
-                     ).pack(side="left", fill="x", expand=True)
-
-            spd = tk.Label(row, text="", bg=row_bg, fg=self.JAUNE,
-                           font=("Consolas", 8), width=9)
-            spd.pack(side="right", padx=(0, 2))
-            self._speed_labels.append(spd)
-
-            tk.Label(row, text=_format_duration(track["duration"]),
-                     bg=row_bg, fg=self.FG2, font=("Consolas", 9)
-                     ).pack(side="right", padx=4)
-
-            pb = ttk.Progressbar(row, length=70, mode="determinate",
-                                 style=self._pb_style)
-            pb.pack(side="right", padx=4)
-            self._prog_bars.append(pb)
+            row = _TrackRow(i, track["title"], track["duration"], is_dup)
+            # Insert before the trailing stretch (last item).
+            self._tracks_layout.insertWidget(self._tracks_layout.count() - 1, row)
+            self._track_rows.append(row)
 
         n = len(self._tracks)
-        self._label_count.config(text=f"{n} morceau{'x' if n > 1 else ''}")
+        self._count_lbl.setText(f"· {n} morceau{'x' if n > 1 else ''}")
         self.set_status(
-            f"{'Playlist' if n > 1 else 'Vidéo unique'} — prêt à télécharger", self.VERT)
-        self._btn_dl.config(state="normal")
-        self._btn_preview.config(state="normal")
-        self._btn_toggle.config(text="Tout désélectionner")
-        self._frame_check_btns.pack(pady=(0, 6))
-        self._canvas.update_idletasks()
-        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+            f"{'Playlist' if n > 1 else 'Vidéo unique'} — prêt à télécharger",
+            theme.SUCCESS,
+        )
+        self._download_btn.setEnabled(True)
+        self._analyze_btn.setEnabled(True)
+        self._toggle_btn.setText("Tout désélectionner")
+        self._toggle_btn.show()
 
-    # ── Download ─────────────────────────────────────────────────────────────────
-    def _build_ydl_opts(self, dossier: str, pb, spd, fmt: str, quality: str) -> dict:
+    def _on_preview_failed(self, msg: str) -> None:
+        self.set_status(f"Erreur : {msg}", theme.ERROR)
+        self._analyze_btn.setEnabled(True)
+
+    def _toggle_all(self) -> None:
+        all_checked = all(r.is_checked() for r in self._track_rows)
+        for r in self._track_rows:
+            r.set_checked(not all_checked)
+        self._toggle_btn.setText(
+            "Tout sélectionner" if all_checked else "Tout désélectionner"
+        )
+
+    # ── Destination ──────────────────────────────────────────────────────────
+    def _browse_destination(self) -> None:
+        d = QFileDialog.getExistingDirectory(
+            self, "Choisir un dossier de destination",
+            self._dest_input.text().strip() or str(Path.home()),
+        )
+        if d:
+            self._dest_input.setText(d)
+            settings_store.save(TOOL_ID, {"dernier_dossier": d})
+
+    # ── Download ─────────────────────────────────────────────────────────────
+    def _build_ydl_opts(self, dossier: str, idx: int, fmt: str, quality: str) -> dict:
         codec = FORMAT_CODEC[fmt]
         embed = fmt in SUPPORTS_THUMBNAIL
 
-        def hook(d, p=pb, s=spd):
+        def hook(d, idx=idx):
             if d["status"] == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
-                dl, speed = d.get("downloaded_bytes", 0), d.get("speed")
+                dl = d.get("downloaded_bytes", 0)
+                speed = d.get("speed")
                 if total:
-                    self.win.after(0, lambda v=dl / total * 100: p.config(value=v))
+                    self.row_progress.emit(idx, int(dl / total * 100))
                 if speed:
-                    self.win.after(0, lambda sp=_format_speed(speed): s.config(text=sp))
+                    self.row_speed.emit(idx, _format_speed(speed))
             elif d["status"] == "finished":
-                self.win.after(0, lambda: p.config(value=100))
-                self.win.after(0, lambda: s.config(text=""))
+                self.row_progress.emit(idx, 100)
+                self.row_speed.emit(idx, "")
 
         pp = [{"key": "FFmpegExtractAudio", "preferredcodec": codec}]
         if fmt == "MP3":
@@ -374,44 +647,46 @@ class ConverterTool(BaseTool):
             "writethumbnail": embed,
         }
 
-    def _telecharger(self):
-        dossier = self._entry_dossier.get().strip()
+    def _start_download(self) -> None:
+        dossier = self._dest_input.text().strip()
         if not dossier:
-            messagebox.showwarning("Attention", "Choisis un dossier de destination !",
-                                   parent=self.win)
+            QMessageBox.warning(self, "Attention", "Choisis un dossier de destination !")
             return
         ok, err = _check_destination(dossier)
         if not ok:
-            messagebox.showerror("Dossier inaccessible", err, parent=self.win)
+            QMessageBox.critical(self, "Dossier inaccessible", err)
             return
-        selected = [(i, t) for i, t in enumerate(self._tracks) if self._check_vars[i].get()]
+        selected = [(i, t) for i, t in enumerate(self._tracks)
+                    if self._track_rows[i].is_checked()]
         if not selected:
-            messagebox.showwarning("Attention", "Aucun morceau sélectionné !", parent=self.win)
+            QMessageBox.warning(self, "Attention", "Aucun morceau sélectionné !")
             return
 
-        fmt     = self._combo_fmt.get()
-        quality = self._combo_qual.get()
-        workers = int(self._combo_workers.get())
-        settings_store.save(TOOL_ID, {"dernier_dossier": dossier, "format": fmt,
-                                      "quality": quality, "workers": workers})
-        self._annuler_flag.clear()
-        self._btn_dl.config(state="disabled")
-        self._btn_cancel.config(state="normal")
-        self._btn_preview.config(state="disabled")
-        self._label_compteur.config(text=f"0 / {len(selected)}")
-        self.set_status(f"Téléchargement ({workers} en parallèle)...", self.accent)
+        fmt = self._fmt_pill.value()
+        quality = self._qual_pill.value() or "192"
+        workers = int(self._workers_pill.value() or "2")
+        settings_store.save(TOOL_ID, {
+            "dernier_dossier": dossier, "format": fmt,
+            "quality": quality, "workers": workers,
+        })
+
+        self._cancel_flag.clear()
+        self._download_btn.setEnabled(False)
+        self._cancel_btn.setEnabled(True)
+        self._analyze_btn.setEnabled(False)
+        self._counter_lbl.setText(f"0 / {len(selected)}")
+        self.set_status(f"Téléchargement ({workers} en parallèle)…", theme.TURQUOISE)
 
         def run():
             done, errors = [0], []
 
             def do_one(args):
                 i, track = args
-                if self._annuler_flag.is_set():
+                if self._cancel_flag.is_set():
                     return False, track["title"], None
-                self.win.after(0, lambda p=self._prog_bars[i]: p.config(value=0))
+                self.row_progress.emit(i, 0)
                 try:
-                    opts = self._build_ydl_opts(
-                        dossier, self._prog_bars[i], self._speed_labels[i], fmt, quality)
+                    opts = self._build_ydl_opts(dossier, i, fmt, quality)
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         ydl.download([track["url"]])
                     _append_history(track["title"], track["url"], dossier, fmt)
@@ -425,34 +700,59 @@ class ConverterTool(BaseTool):
                     success, title, err = future.result()
                     if success:
                         done[0] += 1
-                        self.win.after(0, lambda d=done[0], t=len(selected):
-                                       self._label_compteur.config(text=f"{d} / {t}"))
+                        self.counter_changed.emit(done[0], len(selected))
                     elif err:
                         errors.append(f"{title}: {err}")
-                    if self._annuler_flag.is_set():
+                    if self._cancel_flag.is_set():
                         for f in futures:
                             f.cancel()
                         break
 
-            if self._annuler_flag.is_set():
-                self.win.after(0, lambda: self.set_status("Annulé", self.ROUGE))
-            elif errors:
-                self.win.after(0, lambda: self.set_status(
-                    f"{done[0]} téléchargé(s), {len(errors)} erreur(s)", self.JAUNE))
+            if self._cancel_flag.is_set():
+                self.download_cancelled.emit()
             else:
-                d = done[0]
-                self.win.after(0, lambda: self.set_status(
-                    f"{d} morceau{'x' if d > 1 else ''} téléchargé{'s' if d > 1 else ''} !",
-                    self.VERT))
-                self._notify(d)
-
-            self.win.after(0, lambda: self._btn_dl.config(state="normal"))
-            self.win.after(0, lambda: self._btn_cancel.config(state="disabled"))
-            self.win.after(0, lambda: self._btn_preview.config(state="normal"))
+                self.download_done.emit(done[0], errors)
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _notify(self, count: int):
+    def _cancel_download(self) -> None:
+        self._cancel_flag.set()
+        self._cancel_btn.setEnabled(False)
+
+    def _on_row_progress(self, idx: int, pct: int) -> None:
+        if 0 <= idx < len(self._track_rows):
+            self._track_rows[idx].set_progress(pct)
+
+    def _on_row_speed(self, idx: int, text: str) -> None:
+        if 0 <= idx < len(self._track_rows):
+            self._track_rows[idx].set_speed(text)
+
+    def _on_counter_changed(self, done: int, total: int) -> None:
+        self._counter_lbl.setText(f"{done} / {total}")
+
+    def _on_download_done(self, done: int, errors: list) -> None:
+        if errors:
+            self.set_status(
+                f"{done} téléchargé(s), {len(errors)} erreur(s)", theme.WARNING
+            )
+        else:
+            self.set_status(
+                f"{done} morceau{'x' if done > 1 else ''} téléchargé"
+                f"{'s' if done > 1 else ''} !",
+                theme.SUCCESS,
+            )
+            self._notify(done)
+        self._download_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        self._analyze_btn.setEnabled(True)
+
+    def _on_download_cancelled(self) -> None:
+        self.set_status("Annulé", theme.ERROR)
+        self._download_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        self._analyze_btn.setEnabled(True)
+
+    def _notify(self, count: int) -> None:
         msg = f"MyFileConverter – {count} morceau(x) téléchargé(s) !"
         try:
             script = (
@@ -467,59 +767,105 @@ class ConverterTool(BaseTool):
             )
             subprocess.Popen(
                 ["powershell", "-WindowStyle", "Hidden", "-Command", script],
-                creationflags=0x08000000)
+                creationflags=0x08000000,
+            )
         except Exception:
             pass
 
-    def _annuler(self):
-        self._annuler_flag.set()
-        self._btn_cancel.config(state="disabled")
-
-    def _choisir_dossier(self):
-        d = filedialog.askdirectory(parent=self.win)
-        if d:
-            self._entry_dossier.delete(0, tk.END)
-            self._entry_dossier.insert(0, d)
-            settings_store.save(TOOL_ID, {"dernier_dossier": d})
-
-    def _toggle_all(self):
-        all_checked = all(v.get() for v in self._check_vars)
-        for v in self._check_vars:
-            v.set(not all_checked)
-        self._btn_toggle.config(
-            text="Tout sélectionner" if all_checked else "Tout désélectionner")
-
-    # ── History ──────────────────────────────────────────────────────────────────
-    def _show_history(self):
+    # ── History dialog ───────────────────────────────────────────────────────
+    def _show_history(self) -> None:
         history = _load_history()
-        win = tk.Toplevel(self.win)
-        win.title("Historique")
-        win.geometry("720x380")
-        win.configure(bg=self.BG)
-        win.transient(self.win)
-        tk.Label(win, text="Historique des téléchargements", bg=self.BG, fg=self.FG,
-                 font=("Segoe UI", 12, "bold")).pack(padx=16, pady=(12, 8), anchor="w")
+        dlg = _HistoryDialog(history, self)
+        dlg.exec()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# History dialog
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _HistoryDialog(QDialog):
+    def __init__(self, history: list, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.resize(760, 460)
+
+        outer = QFrame(self)
+        outer.setObjectName("HistoryCard")
+        outer.setGeometry(0, 0, 760, 460)
+        outer.setStyleSheet(f"""
+            #HistoryCard {{
+                background-color: {theme.INK_DEEP};
+                border: 1px solid {theme.rgba(theme.TURQUOISE, 0.4)};
+                border-radius: 22px;
+            }}
+        """)
+
+        col = QVBoxLayout(outer)
+        col.setContentsMargins(28, 22, 28, 22)
+        col.setSpacing(14)
+
+        head = QHBoxLayout()
+        title = QLabel("Historique des téléchargements")
+        title.setFont(theme.font("display", 22, QFont.Weight.Medium))
+        title.setStyleSheet(f"color: {theme.FG}; background: transparent;")
+        head.addWidget(title)
+        head.addStretch(1)
+        close = QPushButton("✕")
+        close.setFixedSize(34, 34)
+        close.setStyleSheet(theme.qss_close_btn())
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.clicked.connect(self.reject)
+        head.addWidget(close)
+        col.addLayout(head)
+
         if not history:
-            tk.Label(win, text="Aucun téléchargement enregistré.", bg=self.BG, fg=self.FG2,
-                     font=("Segoe UI", 10)).pack(pady=30)
+            empty = QLabel("Aucun téléchargement enregistré.")
+            empty.setFont(theme.font("body", 13, italic=True))
+            empty.setStyleSheet(f"color: {theme.FG_MUTED}; padding: 60px;")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            col.addWidget(empty)
+            col.addStretch(1)
             return
-        sty = ttk.Style(win)
-        sty.configure("H.Treeview", background=self.BG2, foreground=self.FG,
-                      fieldbackground=self.BG2, rowheight=24, font=("Segoe UI", 9))
-        sty.configure("H.Treeview.Heading", background=self.BG3, foreground=self.FG2,
-                      font=("Segoe UI", 8, "bold"))
-        sty.map("H.Treeview", background=[("selected", self.accent)])
-        cols = ("date", "title", "format", "folder")
-        tree = ttk.Treeview(win, columns=cols, show="headings", style="H.Treeview")
-        for col, label, w in [("date", "Date", 120), ("title", "Titre", 250),
-                               ("format", "Format", 60), ("folder", "Dossier", 240)]:
-            tree.heading(col, text=label)
-            tree.column(col, width=w, anchor="w")
-        for e in history:
-            tree.insert("", "end", values=(
-                e.get("date", ""), e.get("title", ""),
-                e.get("format", ""), e.get("folder", "")))
-        sb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=sb.set)
-        tree.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=(0, 16))
-        sb.pack(side="right", fill="y", pady=(0, 16), padx=(0, 8))
+
+        table = QTableWidget(len(history), 4)
+        table.setHorizontalHeaderLabels(["Date", "Titre", "Format", "Dossier"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {theme.rgba(theme.INK_DEEPEST, 0.4)};
+                color: {theme.FG};
+                border: 1px solid {theme.rgba(theme.TURQUOISE, 0.15)};
+                border-radius: 10px;
+                gridline-color: transparent;
+                outline: 0;
+            }}
+            QTableWidget::item {{ padding: 6px; }}
+            QTableWidget::item:selected {{
+                background-color: {theme.rgba(theme.TURQUOISE, 0.25)};
+                color: {theme.FG};
+            }}
+            QHeaderView::section {{
+                background-color: {theme.rgba(theme.INK, 0.7)};
+                color: {theme.FG_MUTED};
+                padding: 8px;
+                border: none;
+                font-weight: 600;
+            }}
+        """)
+        for r, e in enumerate(history):
+            table.setItem(r, 0, QTableWidgetItem(e.get("date", "")))
+            table.setItem(r, 1, QTableWidgetItem(e.get("title", "")))
+            table.setItem(r, 2, QTableWidgetItem(e.get("format", "")))
+            table.setItem(r, 3, QTableWidgetItem(e.get("folder", "")))
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        col.addWidget(table, stretch=1)
