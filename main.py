@@ -45,6 +45,7 @@ from core.hub_widgets import (
     NameDialog,
     RecentTile,
     SectionHead,
+    SettingsDialog,
     ToolPlaceholderDialog,
 )
 import core.settings as settings_store
@@ -127,6 +128,15 @@ class MainWindow(QWidget):
         hub_cfg = settings_store.load(HUB_SETTINGS_ID)
         self._user_name = hub_cfg.get("user_name", DEFAULT_USER_NAME)
         self._name_was_set = bool(hub_cfg.get("user_name"))
+        self._particles_enabled: bool = bool(hub_cfg.get("particles_enabled", True))
+
+        # Reasons currently keeping the particle layer paused. Empty set =
+        # animations run; any reason in the set = paused. Centralising the
+        # state here means a single rule (`particles run iff no reasons`).
+        self._pause_reasons: set[str] = set()
+        if not self._particles_enabled:
+            self._pause_reasons.add("user_off")
+        self._open_tools: list = []
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.Window)
@@ -372,6 +382,8 @@ class MainWindow(QWidget):
     # ── Native Win32 chrome (Aero Snap, Win+arrow shortcuts) ─────────────────
     def showEvent(self, event):
         super().showEvent(event)
+        # Resume animations whenever the window comes back from hidden state.
+        self._remove_pause_reason("hidden")
         if not self._native_chrome_done:
             enable_native_features(self)
             self._native_chrome_done = True
@@ -390,8 +402,18 @@ class MainWindow(QWidget):
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == event.Type.WindowStateChange and hasattr(self, "header"):
-            self.header.set_maximized(self.isMaximized())
+        if event.type() == event.Type.WindowStateChange:
+            if hasattr(self, "header"):
+                self.header.set_maximized(self.isMaximized())
+            # Pause animations while minimised — they're invisible anyway.
+            if self.isMinimized():
+                self._add_pause_reason("minimized")
+            else:
+                self._remove_pause_reason("minimized")
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._add_pause_reason("hidden")
 
     def _toggle_maximize(self) -> None:
         if self.isMaximized():
@@ -438,23 +460,65 @@ class MainWindow(QWidget):
         try:
             window = tool.klass(self)
             window.show()
-            # Keep a reference so Python doesn't garbage-collect the window
-            # the moment _on_tool_clicked returns.
-            if not hasattr(self, "_open_tools"):
-                self._open_tools: list = []
             self._open_tools.append(window)
-            window.destroyed.connect(
-                lambda _=None, w=window: self._open_tools.remove(w)
-                if w in self._open_tools else None
-            )
+            self._add_pause_reason("tool_open")
+            window.destroyed.connect(self._on_tool_destroyed)
         except Exception as exc:
             dlg = ToolPlaceholderDialog(tool, self)
             dlg.exec()
             print(f"[hub] failed to open {tool.id}: {exc}")
 
+    def _on_tool_destroyed(self, obj=None) -> None:
+        # `obj` is the QObject being destroyed. Filter out dead references.
+        self._open_tools = [w for w in self._open_tools
+                            if w is not None and w is not obj]
+        if not self._open_tools:
+            self._remove_pause_reason("tool_open")
+
+    # ── Animation pause/resume ───────────────────────────────────────────────
+    def _add_pause_reason(self, reason: str) -> None:
+        self._pause_reasons.add(reason)
+        self._sync_animations()
+
+    def _remove_pause_reason(self, reason: str) -> None:
+        self._pause_reasons.discard(reason)
+        self._sync_animations()
+
+    def _sync_animations(self) -> None:
+        running = not self._pause_reasons
+        if hasattr(self, "particles"):
+            self.particles.set_running(running)
+
     def _on_settings(self) -> None:
-        # Currently the only setting is the user's name.
-        self._ask_user_name(first_launch=False)
+        dlg = SettingsDialog(
+            current={
+                "user_name": self._user_name if self._name_was_set else "",
+                "particles_enabled": self._particles_enabled,
+            },
+            parent=self,
+        )
+        if dlg.exec() != SettingsDialog.DialogCode.Accepted:
+            return
+        new = dlg.values()
+        # Apply name change
+        new_name = new.get("user_name", "").strip()
+        if new_name and new_name != self._user_name:
+            self._user_name = new_name
+            self._name_was_set = True
+            self.hero.set_name(new_name)
+        # Apply particles toggle
+        new_particles = bool(new.get("particles_enabled", True))
+        if new_particles != self._particles_enabled:
+            self._particles_enabled = new_particles
+            if new_particles:
+                self._remove_pause_reason("user_off")
+            else:
+                self._add_pause_reason("user_off")
+        # Persist everything in one shot
+        settings_store.save(HUB_SETTINGS_ID, {
+            "user_name": self._user_name,
+            "particles_enabled": self._particles_enabled,
+        })
 
     def _ask_user_name(self, first_launch: bool) -> None:
         dlg = NameDialog(self._user_name if self._name_was_set else "",

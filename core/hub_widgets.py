@@ -31,6 +31,7 @@ from PySide6.QtGui import (
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -931,3 +932,164 @@ class NameDialog(QDialog):
 
     def value(self) -> str:
         return self._value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings dialog — full preferences panel reachable via the ⚙ button
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SettingsDialog(QDialog):
+    """Multi-section settings panel (Profil + Apparence).
+
+    Use `values()` after `exec()` to fetch the new state. Returns a dict with
+    keys: `user_name` (str) and `particles_enabled` (bool).
+    """
+
+    NAME_MAX_LEN = 24
+
+    def __init__(self, current: dict, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setFixedSize(540, 460)
+
+        outer = QFrame(self)
+        outer.setObjectName("SettingsCard")
+        outer.setGeometry(0, 0, 540, 460)
+        outer.setStyleSheet(f"""
+            #SettingsCard {{
+                background-color: {theme.INK_DEEP};
+                border: 1px solid {theme.rgba(theme.TURQUOISE, 0.45)};
+                border-radius: 22px;
+            }}
+        """)
+
+        col = QVBoxLayout(outer)
+        col.setContentsMargins(28, 22, 28, 22)
+        col.setSpacing(12)
+
+        # Header
+        head = QHBoxLayout()
+        title = QLabel("Préférences")
+        title.setFont(theme.font("display", 24, QFont.Weight.Medium))
+        title.setStyleSheet(f"color: {theme.FG}; background: transparent;")
+        head.addWidget(title)
+        head.addStretch(1)
+        close = QPushButton("✕")
+        close.setFixedSize(34, 34)
+        close.setStyleSheet(theme.qss_close_btn())
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.clicked.connect(self.reject)
+        head.addWidget(close)
+        col.addLayout(head)
+
+        # Section: Profil
+        col.addWidget(self._section_header("PROFIL"))
+        col.addWidget(self._field_label("Prénom"))
+        self._name_input = QLineEdit(current.get("user_name", ""))
+        self._name_input.setMaxLength(self.NAME_MAX_LEN)
+        self._name_input.setPlaceholderText("Romy")
+        self._name_input.setStyleSheet(theme.qss_input())
+        self._name_input.returnPressed.connect(self._validate_and_accept)
+        col.addWidget(self._name_input)
+
+        col.addSpacing(12)
+
+        # Section: Apparence
+        col.addWidget(self._section_header("APPARENCE"))
+
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(14)
+
+        self._particles_toggle = QCheckBox()
+        self._particles_toggle.setChecked(bool(current.get("particles_enabled", True)))
+        self._particles_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._particles_toggle.setFixedSize(22, 22)
+        self._particles_toggle.setStyleSheet(f"""
+            QCheckBox {{ color: transparent; }}
+            QCheckBox::indicator {{
+                width: 22px; height: 22px;
+                background: {theme.rgba(theme.INK_DEEPEST, 0.6)};
+                border: 1px solid {theme.rgba(theme.TURQUOISE, 0.5)};
+                border-radius: 6px;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {theme.TURQUOISE};
+                border-color: {theme.TURQUOISE};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {theme.TURQUOISE};
+            }}
+        """)
+        toggle_row.addWidget(self._particles_toggle, alignment=Qt.AlignmentFlag.AlignTop)
+
+        toggle_text_col = QVBoxLayout()
+        toggle_text_col.setSpacing(2)
+        toggle_label = QLabel("Particules animées")
+        toggle_label.setFont(theme.font("body", 13, QFont.Weight.DemiBold))
+        toggle_label.setStyleSheet(f"color: {theme.FG}; background: transparent;")
+        toggle_text_col.addWidget(toggle_label)
+        toggle_caption = QLabel("Coupe l'animation du fond pour économiser des ressources sur les vieux PC.")
+        toggle_caption.setFont(theme.font("body", 11))
+        toggle_caption.setStyleSheet(f"color: {theme.FG_MUTED}; background: transparent;")
+        toggle_caption.setWordWrap(True)
+        toggle_text_col.addWidget(toggle_caption)
+        toggle_row.addLayout(toggle_text_col, stretch=1)
+
+        col.addLayout(toggle_row)
+
+        col.addStretch(1)
+
+        # Footer
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        cancel = QPushButton("Annuler")
+        cancel.setStyleSheet(theme.qss_button_ghost())
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(cancel)
+        btn_row.addStretch(1)
+        ok = QPushButton("Valider")
+        ok.setStyleSheet(theme.qss_button_primary())
+        ok.setCursor(Qt.CursorShape.PointingHandCursor)
+        ok.clicked.connect(self._validate_and_accept)
+        ok.setDefault(True)
+        btn_row.addWidget(ok)
+        col.addLayout(btn_row)
+
+        self._name_input.setFocus()
+        self._name_input.selectAll()
+
+    @staticmethod
+    def _section_header(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setFont(theme.font("body", 11, QFont.Weight.DemiBold, letter_spacing=8))
+        lbl.setStyleSheet(
+            f"color: {theme.TURQUOISE}; background: transparent; padding-top: 6px;"
+        )
+        return lbl
+
+    @staticmethod
+    def _field_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setFont(theme.font("body", 12, QFont.Weight.DemiBold))
+        lbl.setStyleSheet(f"color: {theme.FG_MUTED}; background: transparent;")
+        return lbl
+
+    def _validate_and_accept(self) -> None:
+        name = self._name_input.text().strip()
+        if not name:
+            self._name_input.setStyleSheet(theme.qss_input().replace(
+                theme.rgba(theme.TURQUOISE, 0.30),
+                theme.rgba(theme.ERROR, 0.6),
+            ))
+            self._name_input.setFocus()
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        return {
+            "user_name": self._name_input.text().strip(),
+            "particles_enabled": self._particles_toggle.isChecked(),
+        }

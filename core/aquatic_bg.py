@@ -160,3 +160,10 @@ class AquaticBg(QWidget):
                 b.x = random.uniform(0, w)
         if not self._bubbles:
             self._ensure_bubbles()
+
+    # ── Public controls ──────────────────────────────────────────────────────
+    def set_running(self, running: bool) -> None:
+        if running and not self._timer.isActive():
+            self._timer.start()
+        elif not running and self._timer.isActive():
+            self._timer.stop()
