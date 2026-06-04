@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from core import theme
-from core.win_chrome import enable_native_features, is_nccalcsize
+from core.win_chrome import enable_native_features, handle_nccalcsize
 
 
 class _ToolTitleBar(QFrame):
@@ -99,6 +99,7 @@ class BaseTool(QWidget):
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.Window)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle(name)
         self.setMinimumSize(min_w, min_h)
         self.resize(width, height)
@@ -169,8 +170,9 @@ class BaseTool(QWidget):
         if univers == "aquatic":
             from core.aquatic_bg import AquaticBg
             return AquaticBg()
-        # parchment / velvet land in a later step; for now fall back to None
-        # which means the dialog will inherit Qt's default flat colour.
+        if univers == "plain":
+            from core.atmos import AtmosBg
+            return AtmosBg()
         return None
 
     # ── Geometry ─────────────────────────────────────────────────────────────
@@ -201,6 +203,7 @@ class BaseTool(QWidget):
             self._native_chrome_done = True
 
     def nativeEvent(self, eventType, message):
-        if is_nccalcsize(eventType, message):
-            return True, 0
+        result = handle_nccalcsize(eventType, message)
+        if result is not None:
+            return result
         return super().nativeEvent(eventType, message)

@@ -284,7 +284,8 @@ def qss_pill(active: bool = False) -> str:
             color: {INK_DEEPEST};
             border: 1px solid transparent;
             border-radius: {RADIUS_PILL}px;
-            padding: 6px 12px;
+            padding: 6px 16px;
+            min-width: 40px;
             font-family: "{FONT_BODY}", "{FONT_FALLBACK}";
             font-weight: 700;
             font-size: 11px;
@@ -296,7 +297,8 @@ def qss_pill(active: bool = False) -> str:
         border: 1px solid {rgba(TURQUOISE, 0.18)};
         color: {FG_MUTED};
         border-radius: {RADIUS_PILL}px;
-        padding: 6px 12px;
+        padding: 6px 16px;
+        min-width: 40px;
         font-family: "{FONT_BODY}", "{FONT_FALLBACK}";
         font-weight: 600;
         font-size: 11px;

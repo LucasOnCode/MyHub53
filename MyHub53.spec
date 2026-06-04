@@ -21,6 +21,7 @@ a = Analysis(
         ('version.txt',       '.'),
         ('ffmpeg_bin',        'ffmpeg_bin'),
         ('assets/fonts',      'assets/fonts'),
+        ('assets/LOGO - Romy - 256x256.png', 'assets'),
     ],
     hiddenimports=[
         # yt-dlp dynamic imports

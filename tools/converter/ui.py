@@ -316,7 +316,7 @@ class ConverterTool(BaseTool):
             parent,
             name="MyFileConverter",
             accent=theme.TURQUOISE,
-            univers="aquatic",
+            univers="plain",
             width=820, height=740,
             min_w=700, min_h=580,
         )
@@ -518,6 +518,9 @@ class ConverterTool(BaseTool):
     # ── Preview / analyse ────────────────────────────────────────────────────
     def _fetch_preview(self) -> None:
         url = self._url_input.text().strip()
+        if url and not url.startswith(("http://", "https://")):
+            url = "https://" + url
+            self._url_input.setText(url)
         if not _validate_url(url):
             QMessageBox.warning(self, "URL invalide",
                                 "Colle une URL valide avant d'analyser.")
@@ -789,7 +792,7 @@ class _HistoryDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(True)
-        self.resize(760, 460)
+        self.setFixedSize(760, 460)
 
         outer = QFrame(self)
         outer.setObjectName("HistoryCard")

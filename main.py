@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -19,8 +20,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QCursor
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtGui import QCursor, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -49,7 +49,7 @@ from core.hub_widgets import (
     ToolPlaceholderDialog,
 )
 import core.settings as settings_store
-from core.win_chrome import enable_native_features, is_nccalcsize
+from core.win_chrome import enable_native_features, handle_nccalcsize, toggle_maximize
 from core.updater import (
     check_update,
     download_and_update,
@@ -121,7 +121,6 @@ class MainWindow(QWidget):
         self.local_version = load_local_version(VERSION_FILE)
         self._remote_version: Optional[str] = None
         self._download_url: Optional[str] = None
-        self._filter_cat: Optional[str] = None
         self._native_chrome_done = False
 
         # Load saved hub-level settings (user name, future preferences).
@@ -130,12 +129,15 @@ class MainWindow(QWidget):
         self._name_was_set = bool(hub_cfg.get("user_name"))
         self._particles_enabled: bool = bool(hub_cfg.get("particles_enabled", True))
 
+        # Restore last-used timestamps so the recents section shows real data.
+        recent_map: dict[str, str] = hub_cfg.get("recent_tools", {})
+        for t in TOOLS:
+            if t.id in recent_map:
+                t.last_used = recent_map[t.id]
+
         # Reasons currently keeping the particle layer paused. Empty set =
-        # animations run; any reason in the set = paused. Centralising the
-        # state here means a single rule (`particles run iff no reasons`).
+        # animations run; any reason in the set = paused.
         self._pause_reasons: set[str] = set()
-        if not self._particles_enabled:
-            self._pause_reasons.add("user_off")
         self._open_tools: list = []
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
@@ -157,7 +159,7 @@ class MainWindow(QWidget):
         self.resize(init_w, init_h)
 
         try:
-            self.setWindowIcon(QIcon(resource_path("icone.ico")))
+            self.setWindowIcon(QIcon(resource_path("assets/LOGO - Romy - 256x256.png")))
         except Exception:
             pass
 
@@ -168,8 +170,10 @@ class MainWindow(QWidget):
         self.atmos = AtmosBg(self)
         self.atmos.setGeometry(0, 0, self.width(), self.height())
 
-        self.particles = ParticleLayer(self, density=28, fps=60)
+        self.particles = ParticleLayer(self, density=28, fps=40)
         self.particles.setGeometry(0, 0, self.width(), self.height())
+        if not self._particles_enabled:
+            self.particles.setVisible(False)
 
         self.content = QWidget(self)
         self.content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -179,8 +183,8 @@ class MainWindow(QWidget):
         self.content.raise_()
 
         outer = QVBoxLayout(self.content)
-        outer.setContentsMargins(28, 16, 28, 20)
-        outer.setSpacing(14)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
         # Header (always visible, never scrolls)
         self.header = HeaderBar(self.local_version)
@@ -232,13 +236,13 @@ class MainWindow(QWidget):
         cat_grid_holder = QWidget()
         cat_grid_holder.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         cat_grid_holder.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                       QSizePolicy.Policy.Expanding)
+                                       QSizePolicy.Policy.Preferred)
         self.cat_grid = QGridLayout(cat_grid_holder)
         self.cat_grid.setContentsMargins(0, 0, 0, 0)
         self.cat_grid.setHorizontalSpacing(theme.GAP_GRID)
         self.cat_grid.setVerticalSpacing(theme.GAP_GRID)
         self._current_cat_cols = 0
-        col.addWidget(cat_grid_holder, stretch=1)
+        col.addWidget(cat_grid_holder)
         self._rebuild_cat_grid(CAT_COLS_MAX)  # initial population
 
         # Recents section
@@ -259,7 +263,13 @@ class MainWindow(QWidget):
         self._rebuild_recents()
 
         self.scroll.setWidget(body)
-        outer.addWidget(self.scroll, stretch=1)
+        _body_pad = QWidget()
+        _body_pad.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        _body_layout = QVBoxLayout(_body_pad)
+        _body_layout.setContentsMargins(28, 14, 28, 20)
+        _body_layout.setSpacing(0)
+        _body_layout.addWidget(self.scroll)
+        outer.addWidget(_body_pad, stretch=1)
 
         # Centre on screen
         self._centre_on_screen()
@@ -316,12 +326,10 @@ class MainWindow(QWidget):
         max_possible_rows = (len(self.cat_tiles) + CAT_COLS_MIN - 1) // CAT_COLS_MIN
         for r in range(max_possible_rows):
             self.cat_grid.setRowStretch(r, 0)
-        # Apply new layout
+        # Apply new layout — tiles are fixed height, no row stretch needed
         for c in range(cols):
             self.cat_grid.setColumnStretch(c, 1)
         n_rows = (len(self.cat_tiles) + cols - 1) // cols
-        for r in range(n_rows):
-            self.cat_grid.setRowStretch(r, 1)
         for idx, tile in enumerate(self.cat_tiles):
             r, c = divmod(idx, cols)
             self.cat_grid.addWidget(tile, r, c)
@@ -393,11 +401,9 @@ class MainWindow(QWidget):
                 QTimer.singleShot(350, lambda: self._ask_user_name(first_launch=True))
 
     def nativeEvent(self, eventType, message):
-        # When Aero Snap styles are added, Windows wants to draw a thin
-        # non-client frame. Eat WM_NCCALCSIZE to keep the window visually
-        # frameless.
-        if is_nccalcsize(eventType, message):
-            return True, 0
+        result = handle_nccalcsize(eventType, message)
+        if result is not None:
+            return result
         return super().nativeEvent(eventType, message)
 
     def changeEvent(self, event):
@@ -416,10 +422,7 @@ class MainWindow(QWidget):
         self._add_pause_reason("hidden")
 
     def _toggle_maximize(self) -> None:
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
+        toggle_maximize(self)
 
     def _centre_on_screen(self) -> None:
         screen = QGuiApplication.primaryScreen()
@@ -432,7 +435,6 @@ class MainWindow(QWidget):
 
     # ── Recents grid ─────────────────────────────────────────────────────────
     def _rebuild_recents(self) -> None:
-        # Clear children
         while self.rec_grid.count():
             item = self.rec_grid.takeAt(0)
             w = item.widget()
@@ -440,10 +442,15 @@ class MainWindow(QWidget):
                 w.setParent(None)
                 w.deleteLater()
 
-        visible = tools_in_category(self._filter_cat)[:RECENT_COLS]
+        recently_used = sorted(
+            [t for t in TOOLS if t.last_used],
+            key=lambda t: t.last_used,
+            reverse=True,
+        )[:RECENT_COLS]
+
         for c in range(RECENT_COLS):
-            if c < len(visible):
-                tile = RecentTile(visible[c])
+            if c < len(recently_used):
+                tile = RecentTile(recently_used[c])
                 tile.clicked.connect(self._on_tool_clicked)
                 self.rec_grid.addWidget(tile, 0, c)
             else:
@@ -467,6 +474,12 @@ class MainWindow(QWidget):
             dlg = ToolPlaceholderDialog(tool, self)
             dlg.exec()
             print(f"[hub] failed to open {tool.id}: {exc}")
+            return
+        tool.last_used = datetime.now().isoformat(timespec="seconds")
+        settings_store.save(HUB_SETTINGS_ID, {
+            "recent_tools": {t.id: t.last_used for t in TOOLS if t.last_used},
+        })
+        self._rebuild_recents()
 
     def _on_tool_destroyed(self, obj=None) -> None:
         # `obj` is the QObject being destroyed. Filter out dead references.
@@ -485,7 +498,7 @@ class MainWindow(QWidget):
         self._sync_animations()
 
     def _sync_animations(self) -> None:
-        running = not self._pause_reasons
+        running = not self._pause_reasons and self._particles_enabled
         if hasattr(self, "particles"):
             self.particles.set_running(running)
 
@@ -510,10 +523,8 @@ class MainWindow(QWidget):
         new_particles = bool(new.get("particles_enabled", True))
         if new_particles != self._particles_enabled:
             self._particles_enabled = new_particles
-            if new_particles:
-                self._remove_pause_reason("user_off")
-            else:
-                self._add_pause_reason("user_off")
+            self.particles.setVisible(new_particles)
+            self._sync_animations()
         # Persist everything in one shot
         settings_store.save(HUB_SETTINGS_ID, {
             "user_name": self._user_name,
@@ -583,7 +594,7 @@ def main() -> int:
     app.setStyleSheet(theme.qss_app())
 
     try:
-        app.setWindowIcon(QIcon(resource_path("icone.ico")))
+        app.setWindowIcon(QIcon(resource_path("assets/LOGO - Romy - 256x256.png")))
     except Exception:
         pass
 

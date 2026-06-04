@@ -34,7 +34,7 @@ PARTICLE_COLORS: list[tuple[int, int, int]] = [
 
 # Discretized particle radii. Each (color, size) combo is pre-rendered
 # into a QPixmap once at startup; particles snap to the nearest bucket.
-SIZE_BUCKETS: list[float] = [2.5, 3.4, 4.3, 5.2, 6.1, 7.0]
+SIZE_BUCKETS: list[float] = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
 
 
 @dataclass
@@ -112,7 +112,7 @@ class ParticleLayer(QWidget):
             x=random.uniform(0, w),
             y=random.uniform(0, h) if initial else h + random.uniform(0, h * 0.25),
             size_idx=size_idx,
-            speed=random.uniform(0.4, 1.6),
+            speed=random.uniform(0.6, 2.2),
             sway_amp=random.uniform(8, 26),
             sway_phase=random.uniform(0, math.tau),
             color_idx=random.randint(0, len(PARTICLE_COLORS) - 1),

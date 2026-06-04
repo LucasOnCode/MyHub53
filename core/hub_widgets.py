@@ -7,8 +7,10 @@ PySide6 migration. Animations land in step 3 (particles) and step 4
 
 from __future__ import annotations
 
+import os
+import sys
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Optional
 
 from PySide6.QtCore import (
     Property,
@@ -28,6 +30,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
@@ -48,45 +51,84 @@ from core import theme
 from tools.registry import Category, ToolCard
 
 
+def _asset_path(rel: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, rel)
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), rel)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Brand mark (52×52 jewel with conic gradient ring) — drawn entirely with QPainter
+# Logo mark — PNG loaded from assets/, falls back to painted "M" jewel
 # ─────────────────────────────────────────────────────────────────────────────
 
-class BrandMark(QFrame):
+_LOGO_PNG = "assets/LOGO - Romy - 256x256.png"
+_LOGO_SIZE = 56
+
+
+class LogoMark(QLabel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(52, 52)
+        self.setFixedSize(_LOGO_SIZE, _LOGO_SIZE)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-    def paintEvent(self, _event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
-        path = QPainterPath()
-        path.addRoundedRect(rect, 14, 14)
-        grad = QRadialGradient(rect.left() + rect.width() * 0.3,
-                               rect.top() + rect.height() * 0.3,
-                               rect.width() * 0.9)
-        grad.setColorAt(0.0, QColor(theme.TURQUOISE))
-        grad.setColorAt(0.6, QColor(theme.INK))
-        grad.setColorAt(1.0, QColor(theme.IRIS))
-        p.fillPath(path, QBrush(grad))
-
-        # subtle inner highlight
-        pen = QPen(QColor(245, 241, 232, 64), 1.0)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(rect, 14, 14)
-
-        # "M" letter
-        p.setPen(QColor(theme.PAPER))
-        p.setFont(theme.font("display", 22, QFont.Weight.Bold))
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "M")
-        p.end()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        px = QPixmap(_asset_path(_LOGO_PNG))
+        if not px.isNull():
+            self.setPixmap(px.scaled(
+                _LOGO_SIZE, _LOGO_SIZE,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+        else:
+            self.setText("M")
+            self.setFont(theme.font("display", 22, QFont.Weight.Bold))
+            self.setStyleSheet(f"color: {theme.TURQUOISE}; background: transparent;")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Header bar — drag, brand, version, update badge, settings/min/close buttons
+# Controls overlay — floats over the header, right-aligned. Background clicks
+# are forwarded to HeaderBar so window dragging still works.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _ControlsOverlay(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def _is_bg(self, e) -> bool:
+        return self.childAt(e.position().toPoint()) is None
+
+    def mousePressEvent(self, e):
+        if self._is_bg(e): e.ignore()
+        else: super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._is_bg(e): e.ignore()
+        else: super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._is_bg(e): e.ignore()
+        else: super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if self._is_bg(e): e.ignore()
+        else: super().mouseDoubleClickEvent(e)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Maximize/restore button that ignores double-clicks.
+# Qt emits `clicked` for EVERY press+release pair, including both halves of a
+# double-click. For a toggle button this cancels itself out. Swallowing
+# mouseDoubleClickEvent prevents the second press from setting "down" state,
+# so the second release never emits `clicked`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _MaxBtn(QPushButton):
+    def mouseDoubleClickEvent(self, e):
+        e.accept()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Header bar — full-width navbar, logo truly centered via overlay pattern
 # ─────────────────────────────────────────────────────────────────────────────
 
 class HeaderBar(QFrame):
@@ -99,89 +141,80 @@ class HeaderBar(QFrame):
     def __init__(self, version: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("HeaderBar")
-        self.setFixedHeight(86)
+        self.setFixedHeight(90)
         self.setStyleSheet(self._qss())
         self._drag_offset: Optional[QPointF] = None
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 14, 20, 14)
-        layout.setSpacing(14)
+        # Base layout: equal stretches around the logo → truly centered
+        center = QHBoxLayout(self)
+        center.setContentsMargins(0, 0, 0, 0)
+        center.setSpacing(0)
+        center.addStretch(1)
+        center.addWidget(LogoMark(), 0, Qt.AlignmentFlag.AlignVCenter)
+        center.addStretch(1)
 
-        # Brand
-        brand = QHBoxLayout()
-        brand.setSpacing(14)
-        brand.addWidget(BrandMark())
+        # Controls overlay: fills the header, buttons pushed right
+        self._ctrl = _ControlsOverlay(self)
+        ctrl = QHBoxLayout(self._ctrl)
+        ctrl.setContentsMargins(0, 0, 20, 0)
+        ctrl.setSpacing(8)
+        ctrl.addStretch(1)
 
-        text_col = QVBoxLayout()
-        text_col.setSpacing(2)
-        text_col.setContentsMargins(0, 0, 0, 0)
-        name = QLabel("MyHub53")
-        name.setFont(theme.font("display", 22, QFont.Weight.DemiBold))
-        name.setStyleSheet(f"color: {theme.FG}; background: transparent;")
-        tag = QLabel("BOÎTE À MERVEILLES")
-        tag.setFont(theme.font("body", 10, QFont.Weight.Medium, letter_spacing=4))
-        tag.setStyleSheet(f"color: {theme.TURQUOISE}; background: transparent;")
-        text_col.addWidget(name)
-        text_col.addWidget(tag)
-        brand.addLayout(text_col)
-        layout.addLayout(brand)
-
-        layout.addStretch(1)
-
-        # Update badge (hidden until check completes positively)
-        self.update_btn = QPushButton(f"▲ Mise à jour disponible")
+        self.update_btn = QPushButton("▲ Mise à jour disponible")
         self.update_btn.setStyleSheet(theme.qss_update_badge())
         self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_btn.hide()
         self.update_btn.clicked.connect(self.update_clicked)
-        layout.addWidget(self.update_btn)
+        ctrl.addWidget(self.update_btn)
 
-        # Version pill
         self.version_label = QLabel(f"v{version}")
         self.version_label.setStyleSheet(theme.qss_version_pill())
         self.version_label.setFont(theme.font("body", 11, QFont.Weight.DemiBold))
-        layout.addWidget(self.version_label)
+        ctrl.addWidget(self.version_label)
 
-        # Icon buttons (settings, minimize, close)
         self.settings_btn = self._make_icon_btn("⚙", "Paramètres")
         self.settings_btn.clicked.connect(self.settings_clicked)
-        layout.addWidget(self.settings_btn)
+        ctrl.addWidget(self.settings_btn)
 
         self.min_btn = self._make_icon_btn("—", "Réduire")
         self.min_btn.clicked.connect(self.minimize_clicked)
-        layout.addWidget(self.min_btn)
+        ctrl.addWidget(self.min_btn)
 
-        self.max_btn = self._make_icon_btn("◻", "Agrandir")
+        self.max_btn = self._make_icon_btn("❐", "Agrandir", btn_class=_MaxBtn)
         self.max_btn.clicked.connect(self.maximize_clicked)
-        layout.addWidget(self.max_btn)
+        ctrl.addWidget(self.max_btn)
 
         self.close_btn = self._make_icon_btn("✕", "Fermer", danger=True)
         self.close_btn.clicked.connect(self.close_clicked)
-        layout.addWidget(self.close_btn)
+        ctrl.addWidget(self.close_btn)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._ctrl.setGeometry(0, 0, self.width(), self.height())
 
     @staticmethod
     def _qss() -> str:
         return f"""
         #HeaderBar {{
-            background-color: {theme.rgba(theme.INK_DEEP, 0.7)};
-            border: 1px solid {theme.rgba(theme.TURQUOISE, 0.22)};
-            border-radius: 20px;
+            background-color: {theme.rgba(theme.INK_DEEP, 0.88)};
+            border-bottom: 1px solid {theme.rgba(theme.TURQUOISE, 0.22)};
         }}
         """
 
-    def _make_icon_btn(self, glyph: str, tooltip: str, danger: bool = False) -> QPushButton:
-        btn = QPushButton(glyph)
-        btn.setFixedSize(38, 38)
+    def _make_icon_btn(self, glyph: str, tooltip: str, danger: bool = False,
+                       btn_class=None) -> QPushButton:
+        btn = (btn_class or QPushButton)(glyph)
+        btn.setFixedSize(28, 28)
         btn.setToolTip(tooltip)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFont(theme.font("body", 13, QFont.Weight.DemiBold))
+        btn.setFont(theme.font("body", 11, QFont.Weight.DemiBold))
         hover_color = theme.FRAMBOISE if danger else theme.TURQUOISE
         btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {theme.rgba(theme.INK, 0.5)};
                 border: 1px solid {theme.rgba(theme.TURQUOISE, 0.20)};
                 color: {theme.FG_MUTED};
-                border-radius: 12px;
+                border-radius: 8px;
             }}
             QPushButton:hover {{
                 background-color: {theme.rgba(theme.INK_MID, 0.7)};
@@ -192,7 +225,6 @@ class HeaderBar(QFrame):
         return btn
 
     def set_maximized(self, is_max: bool) -> None:
-        self.max_btn.setText("❐" if is_max else "◻")
         self.max_btn.setToolTip("Restaurer" if is_max else "Agrandir")
 
     def show_update(self, version: str) -> None:
@@ -214,6 +246,12 @@ class HeaderBar(QFrame):
     # which the OS doesn't recognize as a drag.
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            # Don't intercept clicks that land on a control button — the button
+            # must handle those itself (startSystemMove on a maximised window
+            # would trigger an OS-level restore that interferes with the click).
+            ctrl_pos = self._ctrl.mapFrom(self, e.position().toPoint())
+            if self._ctrl.childAt(ctrl_pos) is not None:
+                return
             handle = self.window().windowHandle()
             if handle is not None and handle.startSystemMove():
                 e.accept()
@@ -234,6 +272,12 @@ class HeaderBar(QFrame):
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            # Don't toggle when double-clicking a control button — the button
+            # already handled both single-clicks; emitting here would add a third.
+            ctrl_pos = self._ctrl.mapFrom(self, e.position().toPoint())
+            if self._ctrl.childAt(ctrl_pos) is not None:
+                e.accept()
+                return
             self.maximize_clicked.emit()
             e.accept()
 
@@ -253,7 +297,7 @@ class Hero(QWidget):
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(8)
+        col.setSpacing(10)
 
         eyebrow = QLabel(self._format_eyebrow())
         eyebrow.setFont(theme.font("body", 11, QFont.Weight.DemiBold, letter_spacing=8))
@@ -262,21 +306,21 @@ class Hero(QWidget):
 
         # Line 1: "Bonjour, " + name (italic, turquoise) + "."
         line1 = QHBoxLayout()
-        line1.setContentsMargins(0, 0, 0, 0)
+        line1.setContentsMargins(0, 0, 0, 8)
         line1.setSpacing(0)
 
         greeting_text, _ = self._greeting()
         self._greet_lbl = QLabel(f"{greeting_text},  ")
         self._greet_lbl.setFont(theme.font("display", 30, QFont.Weight.Normal))
-        self._greet_lbl.setStyleSheet(f"color: {theme.FG}; background: transparent;")
+        self._greet_lbl.setStyleSheet(f"color: {theme.FG}; background: transparent; padding-bottom: 4px;")
 
         self._name_lbl = QLabel(name)
         self._name_lbl.setFont(theme.font("display", 30, QFont.Weight.Normal, italic=True))
-        self._name_lbl.setStyleSheet(f"color: {theme.TURQUOISE}; background: transparent;")
+        self._name_lbl.setStyleSheet(f"color: {theme.TURQUOISE}; background: transparent; padding-bottom: 4px;")
 
         period_lbl = QLabel(".")
         period_lbl.setFont(theme.font("display", 30, QFont.Weight.Normal))
-        period_lbl.setStyleSheet(f"color: {theme.FG}; background: transparent;")
+        period_lbl.setStyleSheet(f"color: {theme.FG}; background: transparent; padding-bottom: 4px;")
 
         line1.addWidget(self._greet_lbl)
         line1.addWidget(self._name_lbl)
@@ -288,6 +332,7 @@ class Hero(QWidget):
         question_lbl = QLabel("Que veux-tu créer aujourd'hui ?")
         question_lbl.setFont(theme.font("display", 34, QFont.Weight.Light, italic=True))
         question_lbl.setStyleSheet(f"color: {theme.FG}; background: transparent;")
+        question_lbl.setMinimumHeight(58)
         col.addWidget(question_lbl)
 
         # Subtitle paragraph
@@ -370,8 +415,9 @@ class CategoryTile(QFrame):
         super().__init__(parent)
         self.cat = cat
         self.count = count
-        self.setMinimumSize(200, 130)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setFixedHeight(170)
+        self.setMinimumWidth(200)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
 
@@ -547,6 +593,24 @@ class CategoryTile(QFrame):
         p.end()
 
 
+def _fmt_last_used(iso: Optional[str]) -> str:
+    if not iso:
+        return "JAMAIS OUVERT"
+    try:
+        dt = datetime.fromisoformat(iso)
+        now = datetime.now()
+        delta = now - dt
+        if delta.days == 0:
+            return f"AUJOURD'HUI · {dt:%H:%M}"
+        if delta.days == 1:
+            return f"HIER · {dt:%H:%M}"
+        if delta.days < 7:
+            return f"IL Y A {delta.days} JOURS"
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return "RÉCEMMENT"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Recent tile (5-col strip)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -584,7 +648,7 @@ class RecentTile(QFrame):
         name.setFont(theme.font("body", 13, QFont.Weight.DemiBold))
         name.setStyleSheet(f"color: {theme.FG}; background: transparent;")
         info_col.addWidget(name)
-        when = QLabel((tool.last_used or "JAMAIS OUVERT").upper())
+        when = QLabel(_fmt_last_used(tool.last_used))
         when.setFont(theme.font("body", 10, QFont.Weight.Medium, letter_spacing=4))
         when.setStyleSheet(f"color: {theme.FG_DIM}; background: transparent;")
         info_col.addWidget(when)
@@ -804,8 +868,8 @@ class ToolPlaceholderDialog(QDialog):
         col.addLayout(head)
 
         msg = QLabel(
-            "Cet outil sera disponible une fois la migration\n"
-            "vers la nouvelle interface terminée (étape 5/6)."
+            "Cet outil n'a pas pu s'ouvrir. Vérifie la console\n"
+            "pour plus de détails."
         )
         msg.setFont(theme.font("body", 13))
         msg.setStyleSheet(f"color: {theme.FG_MUTED}; background: transparent;")
@@ -1030,7 +1094,7 @@ class SettingsDialog(QDialog):
         toggle_label.setFont(theme.font("body", 13, QFont.Weight.DemiBold))
         toggle_label.setStyleSheet(f"color: {theme.FG}; background: transparent;")
         toggle_text_col.addWidget(toggle_label)
-        toggle_caption = QLabel("Coupe l'animation du fond pour économiser des ressources sur les vieux PC.")
+        toggle_caption = QLabel("Cache les particules animées du fond.")
         toggle_caption.setFont(theme.font("body", 11))
         toggle_caption.setStyleSheet(f"color: {theme.FG_MUTED}; background: transparent;")
         toggle_caption.setWordWrap(True)

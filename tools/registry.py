@@ -26,7 +26,7 @@ class ToolCard:
     accent:      str
     klass:       "Type[BaseTool]"
     category:    str = "outils"
-    univers:     Literal["aquatic", "parchment", "velvet"] = "aquatic"
+    univers:     Literal["aquatic", "plain", "parchment", "velvet"] = "aquatic"
     glow:        str = ""
     last_used:   Optional[str] = None
 
@@ -55,7 +55,7 @@ def _load_tools() -> list[ToolCard]:
             accent=theme.TURQUOISE,
             klass=ConverterTool,
             category="musique",
-            univers="aquatic",
+            univers="plain",
             glow=theme.rgba(theme.TURQUOISE, 0.45),
             last_used=None,
         ),
